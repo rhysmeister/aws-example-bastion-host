@@ -1,0 +1,163 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t2.medium
+    Description: "The instance type for the Bastion host"
+  AmiId:
+    #Type: AWS::SSN::Parameter::Value<AWS::EC2::Image::Id>
+    Type: String
+    Default: "ami-026b57f3c383c2eec"
+    Description: "The OS Image to use on the Bastion host (Default Amazon Linux 2 in N. Virginia Region)"
+  MyIP:
+    Type: String
+    Description: "The IP you want to ssh to the Bastion host from (with cidr)"
+
+Resources:
+  bastionVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Project
+          Value: bastionVPC
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: bastionVPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref bastionVPC
+      InternetGatewayId: !Ref InternetGateway
+  subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: bastionVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: 
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+  subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: bastionVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: ""
+  subnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:
+        Ref: bastionVPC
+      CidrBlock: 10.0.3.0/24
+      AvailabilityZone:
+        Fn::Select:
+          - 2
+          - Fn::GetAZs: ""
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref subnet1
+      ConnectivityType: "private"
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref subnet2
+      ConnectivityType: "private"
+  NatGateway3:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref subnet3
+      ConnectivityType: "private"
+  DefaultRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref bastionVPC
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref DefaultRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  Subnet1RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DefaultRouteTable
+      SubnetId: !Ref subnet1
+  Subnet2RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DefaultRouteTable
+      SubnetId: !Ref subnet2
+  Subnet3RouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DefaultRouteTable
+      SubnetId: !Ref subnet3
+  BastionSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Allow Incoming SSH for an IP"
+      GroupName: BastionSG
+      SecurityGroupIngress:
+        - Description: Allow ssh from MyIP
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref MyIP
+      VpcId: !Ref bastionVPC
+  BastionLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: "BastionHostTemplate"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref BastionSG
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            Groups:
+              - !Ref BastionSG
+  BastionASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: BastionASG
+      AvailabilityZones:
+        - Fn::Select:
+            - 0
+            - Fn::GetAZs: ""
+        - Fn::Select:
+            - 1
+            - Fn::GetAZs: ""
+        - Fn::Select:
+            - 2
+            - Fn::GetAZs: ""
+      DefaultInstanceWarmup: 120
+      DesiredCapacity: 1
+      MinSize: 1
+      MaxSize: 1
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BastionLaunchTemplate
+        Version: !GetAtt BastionLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier: 
+        - !Ref subnet1
+        - !Ref subnet2
+        - !Ref subnet3 
